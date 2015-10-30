@@ -8,12 +8,25 @@ default_theme="./Themes/default"
 icon_path="Contents/Resources/ApplicationIcon.icns"
 dock_res="/System/Library/CoreServices/Dock.app/Contents/Resources"
 system_res="/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources"
+system_ver="/System/Library/CoreServices/SystemVersion.plist"
 imgs=(finder.png finder@2x.png trashempty.png trashempty@2x.png trashfull.png trashfull@2x.png)
 
 # =========
 # Functions
 # =========
-# 
+#  get system version
+function systemVersion() {
+	version=`readPlist $system_ver "ProductVersion"`
+	echo $version
+}
+
+# check if it's rootless
+function isRootless() {
+	sysVersion=`systemVersion`
+	sysVer="${sysVersion%.*}" # format: xx.xx
+	echo "($sysVer - 10.11) >= 0" | bc -l
+}
+
 # Set the icon of file or direstory
 # params:
 # xcodeDevToolsSetIcon [filepath] [iconfile]
@@ -25,6 +38,7 @@ function xcodeDevToolsSetIcon() {
 	if [ -d $xcode_devtools ]; then
 		if [ -d "$fpath" ]; then
 			# $fpath is a direstory
+			rm "$fpath/Icon"$'\r' 2> /dev/null
 			touch "$fpath/Icon"$'\r'
 			cp "$ipath" tempIcon.icns
 			sips -i tempIcon.icns > /dev/null 2>&1
@@ -44,9 +58,9 @@ function xcodeDevToolsSetIcon() {
 			setfile -a C "$fpath"
 			rm tempIcon.icns
 			rm tempicns.rsrc
-		else
-			echo "$fpath is NOT a file or direstory"
-			exit 1
+		# else
+		# 	echo "$fpath is NOT a file or direstory"
+		# 	exit 1
 		fi
 	else
 		echo "[*] Error: this need Xcode Developer/Tools. Please install it first!"
@@ -68,19 +82,21 @@ function setAppIcon() {
 	apath=$1
 	ipath=$2
 
-	# Replace the *.app/Contents/Resources/*.icns
-	icon=`readPlist "$apath/Contents/Info.plist" "CFBundleIconFile"`
-	if [ "${icon##*.}" != "icns" ]; then
-		icon="$icon".icns
-	fi
+	if [ -d "$apath" ]; then
+		# Replace the *.app/Contents/Resources/*.icns
+		icon=`readPlist "$apath/Contents/Info.plist" "CFBundleIconFile"`
+		if [ "${icon##*.}" != "icns" ]; then
+			icon="$icon".icns
+		fi
 
-	if [ ! -e "$apath/Contents/Resources/$icon.bak" ]; then
-		cp "$apath/Contents/Resources/$icon" "$apath/Contents/Resources/$icon.bak"
+		if [ ! -e "$apath/Contents/Resources/$icon.bak" ]; then
+			cp "$apath/Contents/Resources/$icon" "$apath/Contents/Resources/$icon.bak"
+		fi
+		cp "$ipath" "$apath/Contents/Resources/$icon"
+		
+		touch "$apath/1"
+		rm "$apath/1"
 	fi
-	cp "$ipath" "$apath/Contents/Resources/$icon"
-	
-	touch "$apath/1"
-	rm "$apath/1"
 }
 # restoreAppIcon [app_path]
 function restoreAppIcon() {
@@ -99,8 +115,7 @@ function restoreAppIcon() {
 		rm "$apath/Icon"$'\r'
 	fi
 
-	touch "$apath/1"
-	rm "$apath/1"
+	touch "$apath/1" 2> /dev/null && rm "$apath/1"
 }
 function restoreDocker() {
 	for img in ${imgs[*]}
@@ -128,13 +143,101 @@ function screensaverWallpaper() {
 # Usage
 function usage() {
 	echo "[*] Usage:"
-	echo "[*] $0 [-i | -r | -h | -d [app_name] | -s [theme] | -f [file] [icon]]"
+	echo "[*] $0 [-i | -r | -h | -d [app_name] | -s [theme] | -f [file] [icon]] [-rootless]"
 	echo "[*] -i: install the default icon theme"
 	echo "[*] -r: restore the origin icon"
 	echo "[*] -d: delete/hide the app in Launchpad"
 	echo "[*] -s: install the specified theme"
 	echo "[*] -f: set icon for file or folder"
 	echo "[*] -h: help"
+	echo "[*] -rootless: it can be used only when you disable SIP"
+}
+
+# Install [theme]
+function install() {
+	theme=$1
+
+	# There are two ways to change App icon
+	if [ -d $xcode_devtools ]; then
+		# Use Xcode Developer Tools to create Icon^M
+		foo=xcodeDevToolsSetIcon
+	else
+		# Replace the Contents/Resources/ApplicationIcon.icns
+		foo=setAppIcon
+	fi
+
+	if [ $isRootless = 1 ]; then
+		echo
+		echo -e "\033[31mWarning:\033[0m"
+		echo "In OS X 10.11(El Capitan) and up, Apple add a new 'Rootless' feature -- System Integrity Protection(SIP)."
+		echo "SIP is protecting the core apps which OS X installs into Applications and Applications Utilities. This means it will no \
+longer be possible to change the applications which OS X installs, even from the command line when using root privileges."
+		echo "You can find all protected directories in /System/Library/Sandbox/rootless.conf"
+		echo "So we cant change the icon of core apps in Applications and Applications Utilities."
+		echo
+		echo -e "\033[31mOr:\033[0m"
+		echo "If you really want to change the default apps icon, you can disable SIP."
+		echo "Currently this requires rebooting into recovery mode and running the command 'csrutil disable'"
+		echo
+		echo -n "Would you still want to continue[y/n]:"
+		read isContinue
+		if [ $isContinue != "y" ]; then
+			echo "[*] exit"
+			exit 1
+		fi
+	else
+		echo "[*] Replace the Applications icon ..."
+		for appicon in $theme/Applications/*
+		do
+			tmp="${appicon##*/}"
+			app="${tmp%.*}"
+			$foo "/Applications/$app" "$appicon"
+		done
+		echo "[*] Replace the Utilities icon ..."
+		for appicon in $theme/Utilities/*
+		do
+			tmp="${appicon##*/}"
+			app="${tmp%.*}"
+			$foo "/Applications/Utilities/$app" "$appicon"
+		done
+
+		# Change Finder & Trash app icon
+		echo "[*] Replace the Finder & Trash icon ..."
+		for img in ${imgs[*]}
+		do
+			if [ ! -e $dock_res/$img.bak ]; then
+				mv $dock_res/$img $dock_res/$img.bak
+			else
+				rm $dock_res/$img 2> /dev/null
+			fi
+		done
+
+		for file in $theme/Docker/*
+		do
+			cp -p $file $dock_res/
+		done
+	fi
+	
+	echo "[*] Replace the thirdpart app icon ..."
+	for ipath in $theme/Apps/*
+	do
+		tmp="${ipath##*/}"
+		app="${tmp%.*}"
+		$foo "/Applications/$app" "$ipath"
+	done
+
+	# delete caches & restart docker
+	find /private/var/ -name *dock.iconcache* -exec rm {} \;
+	killall Dock
+
+	# Replace OS X default icon
+	echo "[*] Replace the default system icon ..."
+	# for file in $default_theme/System/*
+	# do
+	# 	# ...
+	# done
+	echo "[*] - This is NOT support now"
+	echo "[*] done"
 }
 
 # ====
@@ -154,68 +257,16 @@ if [ ! $1 ]; then
 	exit 1
 fi
 
-echo "Welcome to MacIconist!"
-say "Welcome to MacIconist"
+echo "Welcome to Iconist!"
+say "Welcome to Iconist"
+
+isRootless=`isRootless`
+if [ $2 = "-rootless" ]; then
+	isRootless=0
+fi
 
 if [ $1 = "-i" ]; then
-	# There are two ways to change App icon
-	if [ -d $xcode_devtools ]; then
-		# Use Xcode Developer Tools to create Icon^M
-		foo=xcodeDevToolsSetIcon
-	else
-		# Replace the Contents/Resources/ApplicationIcon.icns
-		foo=setAppIcon
-	fi
-
-	echo "[*] Replace the Applications icon ..."
-	for appicon in $default_theme/Applications/*
-	do
-		tmp="${appicon##*/}"
-		app="${tmp%.*}"
-		$foo "/Applications/$app" "$appicon"
-	done
-	echo "[*] Replace the Utilities icon ..."
-	for appicon in $default_theme/Utilities/*
-	do
-		tmp="${appicon##*/}"
-		app="${tmp%.*}"
-		$foo "/Applications/Utilities/$app" "$appicon"
-	done
-	echo "[*] Replace the thirdpart app icon ..."
-	for ipath in $default_theme/Apps/*
-	do
-		tmp="${ipath##*/}"
-		app="${tmp%.*}"
-		$foo "/Applications/$app" "$ipath"
-	done
-
-	# Change Finder & Trash app icon
-	echo "[*] Replace the Finder & Trash icon ..."
-	for img in ${imgs[*]}
-	do
-		if [ ! -e $dock_res/$img.bak ]; then
-			mv $dock_res/$img $dock_res/$img.bak
-		else
-			rm $dock_res/$img 2> /dev/null
-		fi
-	done
-
-	for file in $default_theme/Docker/*
-	do
-		cp -p $file $dock_res/
-	done
-	# delete caches & restart docker
-	find /private/var/ -name *dock.iconcache* -exec rm {} \;
-	killall Dock
-
-	# Replace OS X default icon
-	echo "[*] Replace the default system icon ..."
-	# for file in $default_theme/System/*
-	# do
-	# 	# ...
-	# done
-	echo "[*] - This is NOT support now"
-	echo "[*] done"
+	install $default_theme
 elif [ $1 = "-f" ]; then
 	echo "[*] Set the icon of $2"
 	xcodeDevToolsSetIcon $2 $3
@@ -229,11 +280,15 @@ elif [ $1 = "-r" ]; then
 			restoreAppIcon "$app"
 		fi
 	done
-	echo "[*] Restore the Utilities ..."
-	for app in /Applications/Utilities/*
-	do
-		restoreAppIcon "$app"
-	done
+
+	if [ $isRootless = 0 ]; then
+		echo "[*] Restore the Utilities ..."
+		for app in /Applications/Utilities/*
+		do
+			restoreAppIcon "$app"
+		done
+	fi
+	
 	echo "[*] Restore the Docker ..."
 	restoreDocker
 	echo "[*] done"
@@ -242,7 +297,8 @@ elif [ $1 = "-d" ]; then
 	hideAppIconInLaunchpad $2
 elif [ $1 = "-s" ]; then
 	# Install the specified theme
-	echo "This is NOT support now!"
+	echo "[*] Use the theme -- $2"
+	install "./Themes/$2"
 else
 	usage
 fi
